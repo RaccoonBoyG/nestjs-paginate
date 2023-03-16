@@ -73,11 +73,11 @@ export interface PaginateConfig<T> {
         [key in Column<T> | string]?: (FilterOperator | FilterSuffix)[]
     }
     loadEagerRelations?: boolean
+    loadAllRelationIds?: boolean
     withDeleted?: boolean
     relativePath?: boolean
     origin?: string
     paginationType?: PaginationType
-    loadAllRelationIds?: boolean
 }
 
 export const DEFAULT_MAX_LIMIT = 100
