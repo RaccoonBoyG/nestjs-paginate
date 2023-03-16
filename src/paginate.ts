@@ -77,6 +77,7 @@ export interface PaginateConfig<T> {
     relativePath?: boolean
     origin?: string
     paginationType?: PaginationType
+    loadAllRelationsIds?: boolean
 }
 
 export const DEFAULT_MAX_LIMIT = 100
@@ -148,6 +149,9 @@ export async function paginate<T extends ObjectLiteral>(
         if (!config.relations) {
             FindOptionsUtils.joinEagerRelations(queryBuilder, queryBuilder.alias, repo.metadata)
         }
+    }
+    if (!config.relations && config.loadAllRelationsIds === true && config.loadEagerRelations === false) {
+        queryBuilder.loadAllRelationsIds()
     }
 
     if (isPaginated) {
