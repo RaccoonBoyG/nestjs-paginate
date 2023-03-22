@@ -23,9 +23,9 @@ import {
     positiveNumberOrDefault,
     RelationColumn,
     SortBy,
-    hasColumnWithPropertyPath,
     includesAllPrimaryKeyColumns,
     isEntityKey,
+    getQueryUrlComponents,
 } from './helper'
 import { addFilter, FilterOperator, FilterSuffix } from './filter'
 
@@ -43,6 +43,7 @@ export class Paginated<T> {
         sortBy: SortBy<T>
         searchBy: Column<T>[]
         search: string
+        select: string[]
         filter?: { [column: string]: string | string[] }
     }
     links: {
@@ -52,11 +53,6 @@ export class Paginated<T> {
         next?: string
         last?: string
     }
-}
-
-export enum PaginationType {
-    LIMIT_AND_OFFSET = 'limit',
-    TAKE_AND_SKIP = 'take',
 }
 
 export interface PaginateConfig<T> {
@@ -70,20 +66,18 @@ export interface PaginateConfig<T> {
     defaultLimit?: number
     where?: FindOptionsWhere<T> | FindOptionsWhere<T>[]
     filterableColumns?: {
-        [key in Column<T> | string]?: (FilterOperator | FilterSuffix)[]
+        [key in Column<T> | string]?: (FilterOperator | FilterSuffix)[] | true
     }
     loadEagerRelations?: boolean
     loadAllRelationIds?: boolean
     withDeleted?: boolean
     relativePath?: boolean
     origin?: string
-    paginationType?: PaginationType
 }
 
 export const DEFAULT_MAX_LIMIT = 100
 export const DEFAULT_LIMIT = 20
 export const NO_PAGINATION = 0
-export const DEFAULT_PAGINATE_TYPE = PaginationType.TAKE_AND_SKIP
 
 export async function paginate<T extends ObjectLiteral>(
     query: PaginateQuery,
@@ -95,7 +89,6 @@ export async function paginate<T extends ObjectLiteral>(
     const defaultLimit = config.defaultLimit || DEFAULT_LIMIT
     const maxLimit = positiveNumberOrDefault(config.maxLimit, DEFAULT_MAX_LIMIT)
     const queryLimit = positiveNumberOrDefault(query.limit, defaultLimit)
-    const paginationType = config.paginationType || DEFAULT_PAGINATE_TYPE
 
     const isPaginated = !(queryLimit === NO_PAGINATION && maxLimit === NO_PAGINATION)
 
@@ -103,43 +96,6 @@ export async function paginate<T extends ObjectLiteral>(
 
     const sortBy = [] as SortBy<T>
     const searchBy: Column<T>[] = []
-    let path: string
-
-    const r = new RegExp('^(?:[a-z+]+:)?//', 'i')
-    let queryOrigin = ''
-    let queryPath = ''
-    if (r.test(query.path)) {
-        const url = new URL(query.path)
-        queryOrigin = url.origin
-        queryPath = url.pathname
-    } else {
-        queryPath = query.path
-    }
-
-    if (config.relativePath) {
-        path = queryPath
-    } else if (config.origin) {
-        path = config.origin + queryPath
-    } else {
-        path = queryOrigin + queryPath
-    }
-
-    if (config.sortableColumns.length < 1) {
-        logger.debug("Missing required 'sortableColumns' config.")
-        throw new ServiceUnavailableException()
-    }
-
-    if (query.sortBy) {
-        for (const order of query.sortBy) {
-            if (isEntityKey(config.sortableColumns, order[0]) && ['ASC', 'DESC'].includes(order[1])) {
-                sortBy.push(order as Order<T>)
-            }
-        }
-    }
-
-    if (!sortBy.length) {
-        sortBy.push(...(config.defaultSortBy || [[config.sortableColumns[0], 'ASC']]))
-    }
 
     let [items, totalItems]: [T[], number] = [[], 0]
 
@@ -155,17 +111,7 @@ export async function paginate<T extends ObjectLiteral>(
     }
 
     if (isPaginated) {
-        // Allow user to choose between limit/offset and take/skip.
-        // However, using limit/offset can return unexpected results.
-        // For more information see:
-        // [#477](https://github.com/ppetzold/nestjs-paginate/issues/477)
-        // [#4742](https://github.com/typeorm/typeorm/issues/4742)
-        // [#5670](https://github.com/typeorm/typeorm/issues/5670)
-        if (paginationType === PaginationType.LIMIT_AND_OFFSET) {
-            queryBuilder.limit(limit).offset((page - 1) * limit)
-        } else {
-            queryBuilder.take(limit).skip((page - 1) * limit)
-        }
+        queryBuilder.limit(limit).offset((page - 1) * limit)
     }
 
     if (config.relations) {
@@ -204,29 +150,44 @@ export async function paginate<T extends ObjectLiteral>(
         nullSort = config.nullSort === 'last' ? 'NULLS LAST' : 'NULLS FIRST'
     }
 
+    if (config.sortableColumns.length < 1) {
+        logger.debug("Missing required 'sortableColumns' config.")
+        throw new ServiceUnavailableException()
+    }
+
+    if (query.sortBy) {
+        for (const order of query.sortBy) {
+            if (isEntityKey(config.sortableColumns, order[0]) && ['ASC', 'DESC'].includes(order[1])) {
+                sortBy.push(order as Order<T>)
+            }
+        }
+    }
+
+    if (!sortBy.length) {
+        sortBy.push(...(config.defaultSortBy || [[config.sortableColumns[0], 'ASC']]))
+    }
+
     for (const order of sortBy) {
         const columnProperties = getPropertiesByColumnName(order[0])
         const { isVirtualProperty } = extractVirtualProperty(queryBuilder, columnProperties)
         const isRelation = checkIsRelation(queryBuilder, columnProperties.propertyPath)
         const isEmbeded = checkIsEmbedded(queryBuilder, columnProperties.propertyPath)
-        const alias = fixColumnAlias(columnProperties, queryBuilder.alias, isRelation, isVirtualProperty, isEmbeded)
+        let alias = fixColumnAlias(columnProperties, queryBuilder.alias, isRelation, isVirtualProperty, isEmbeded)
+        if (isVirtualProperty) {
+            alias = `"${alias}"`
+        }
         queryBuilder.addOrderBy(alias, order[1], nullSort)
     }
 
     // When we partial select the columns (main or relation) we must add the primary key column otherwise
     // typeorm will not be able to map the result.
-    const selectParams = config.select || query.select
+    const selectParams =
+        config.select && query.select ? config.select.filter((column) => query.select.includes(column)) : config.select
     if (selectParams?.length > 0 && includesAllPrimaryKeyColumns(queryBuilder, selectParams)) {
         const cols: string[] = selectParams.reduce((cols, currentCol) => {
-            if (query.select?.includes(currentCol) ?? true) {
-                const columnProperties = getPropertiesByColumnName(currentCol)
-                const isRelation = checkIsRelation(queryBuilder, columnProperties.propertyPath)
-                const { isVirtualProperty } = extractVirtualProperty(queryBuilder, columnProperties)
-                if (hasColumnWithPropertyPath(queryBuilder, columnProperties) || isVirtualProperty) {
-                    // here we can avoid to manually fix and add the query of virtual columns
-                    cols.push(fixColumnAlias(columnProperties, queryBuilder.alias, isRelation))
-                }
-            }
+            const columnProperties = getPropertiesByColumnName(currentCol)
+            const isRelation = checkIsRelation(queryBuilder, columnProperties.propertyPath)
+            cols.push(fixColumnAlias(columnProperties, queryBuilder.alias, isRelation))
             return cols
         }, [])
         queryBuilder.select(cols)
@@ -275,7 +236,7 @@ export async function paginate<T extends ObjectLiteral>(
                     }
 
                     if (['postgres', 'cockroachdb'].includes(queryBuilder.connection.options.type)) {
-                        condition.parameters[0] += '::text'
+                        condition.parameters[0] = `CAST(${condition.parameters[0]} AS text)`
                     }
 
                     qb.orWhere(qb['createWhereConditionExpression'](condition), {
@@ -296,11 +257,25 @@ export async function paginate<T extends ObjectLiteral>(
         items = await queryBuilder.getMany()
     }
 
+    let path: string
+    const { queryOrigin, queryPath } = getQueryUrlComponents(query.path)
+    if (config.relativePath) {
+        path = queryPath
+    } else if (config.origin) {
+        path = config.origin + queryPath
+    } else {
+        path = queryOrigin + queryPath
+    }
+
     const sortByQuery = sortBy.map((order) => `&sortBy=${order.join(':')}`).join('')
     const searchQuery = query.search ? `&search=${query.search}` : ''
 
     const searchByQuery =
         query.searchBy && searchBy.length ? searchBy.map((column) => `&searchBy=${column}`).join('') : ''
+
+    // Only expose select in meta data if query select differs from config select
+    const isQuerySelected = selectParams?.length !== config.select?.length
+    const selectQuery = isQuerySelected ? `&select=${selectParams.join(',')}` : ''
 
     const filterQuery = query.filter
         ? '&' +
@@ -312,7 +287,7 @@ export async function paginate<T extends ObjectLiteral>(
           )
         : ''
 
-    const options = `&limit=${limit}${sortByQuery}${searchQuery}${searchByQuery}${filterQuery}`
+    const options = `&limit=${limit}${sortByQuery}${searchQuery}${searchByQuery}${selectQuery}${filterQuery}`
 
     const buildLink = (p: number): string => path + '?page=' + p + options
 
@@ -328,6 +303,7 @@ export async function paginate<T extends ObjectLiteral>(
             sortBy,
             search: query.search,
             searchBy: query.search ? searchBy : undefined,
+            select: isQuerySelected ? selectParams : undefined,
             filter: query.filter,
         },
         links: {
