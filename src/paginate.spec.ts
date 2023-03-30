@@ -166,10 +166,35 @@ describe('paginate', () => {
         const config: PaginateConfig<CatEntity> = {
             sortableColumns: ['id'],
             defaultSortBy: [['id', 'ASC']],
-            defaultLimit: 1,
         }
         const query: PaginateQuery = {
             path: '',
+        }
+
+        const queryBuilder = await dataSource
+            .createQueryBuilder()
+            .select('cats')
+            .from(CatEntity, 'cats')
+            .where('cats.color = :color', { color: 'white' })
+
+        const result = await paginate<CatEntity>(query, queryBuilder, config)
+
+        expect(result.data).toStrictEqual(cats.slice(3, 5))
+    })
+
+    it('should accept query builder and work with query filter', async () => {
+        const config: PaginateConfig<CatEntity> = {
+            sortableColumns: ['id'],
+            defaultSortBy: [['id', 'ASC']],
+            filterableColumns: {
+                'size.height': true,
+            },
+        }
+        const query: PaginateQuery = {
+            path: '',
+            filter: {
+                'size.height': '$gte:20',
+            },
         }
 
         const queryBuilder = await dataSource
@@ -271,6 +296,22 @@ describe('paginate', () => {
             path: '',
             page: 1,
             limit: 20,
+        }
+
+        const result = await paginate<CatEntity>(query, catRepo, config)
+
+        expect(result.data).toStrictEqual(cats.slice(0, 2))
+    })
+
+    it('should limit cats by query', async () => {
+        const config: PaginateConfig<CatEntity> = {
+            sortableColumns: ['id'],
+            maxLimit: Number.MAX_SAFE_INTEGER,
+            defaultLimit: Number.MAX_SAFE_INTEGER,
+        }
+        const query: PaginateQuery = {
+            path: '',
+            limit: 2,
         }
 
         const result = await paginate<CatEntity>(query, catRepo, config)
@@ -750,6 +791,29 @@ describe('paginate', () => {
 
         expect(result.data).toStrictEqual([cats[3]])
         expect(result.links.current).toBe('?page=1&limit=20&sortBy=id:ASC&filter.name=$not:Leche')
+    })
+
+    it('should return based on a nested many-to-one where condition', async () => {
+        const config: PaginateConfig<CatToyEntity> = {
+            sortableColumns: ['id'],
+            relations: ['cat'],
+            where: {
+                cat: {
+                    id: cats[0].id,
+                },
+            },
+        }
+        const query: PaginateQuery = {
+            path: '',
+        }
+
+        const result = await paginate<CatToyEntity>(query, catToyRepo, config)
+
+        expect(result.meta.totalItems).toBe(3)
+        result.data.forEach((toy) => {
+            expect(toy.cat.id).toBe(cats[0].id)
+        })
+        expect(result.links.current).toBe('?page=1&limit=20&sortBy=id:ASC')
     })
 
     it('should return result based on filter on many-to-one relation', async () => {
