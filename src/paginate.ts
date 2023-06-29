@@ -118,11 +118,11 @@ export async function paginate<T extends ObjectLiteral>(
 
     if (isPaginated) {
         // Allow user to choose between limit/offset and take/skip.
-        // However, using take/skip can cause problems with sorting and selections.
-        if (config.paginationType === PaginationType.TAKE_AND_SKIP) {
-            queryBuilder.take(limit).skip((page - 1) * limit)
-        } else {
+        // However, using limit/offset can cause problems when joining one-to-many etc.
+        if (config.paginationType === PaginationType.LIMIT_AND_OFFSET) {
             queryBuilder.limit(limit).offset((page - 1) * limit)
+        } else {
+            queryBuilder.take(limit).skip((page - 1) * limit)
         }
     }
 
@@ -149,7 +149,7 @@ export async function paginate<T extends ObjectLiteral>(
                     )
 
                     if (typeof relationSchema === 'object') {
-                        createQueryBuilderRelations(relationName, relationSchema, `${prefix}_${relationName}`)
+                        createQueryBuilderRelations(relationName, relationSchema, `${alias ?? prefix}_${relationName}`)
                     }
                 })
             }
@@ -163,8 +163,9 @@ export async function paginate<T extends ObjectLiteral>(
     }
 
     if (config.sortableColumns.length < 1) {
-        logger.debug("Missing required 'sortableColumns' config.")
-        throw new ServiceUnavailableException()
+        const message = "Missing required 'sortableColumns' config."
+        logger.debug(message)
+        throw new ServiceUnavailableException(message)
     }
 
     if (query.sortBy) {
